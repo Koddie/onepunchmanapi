@@ -24,9 +24,13 @@ Servidor DB - MySql
 Endereço: localhost:8080/heroi/novo
 
 body json {
+
     “nome”: string
+
     “classe”: “A”|”B”|”C”|”S”
+    
     “ranking”: integer
+    
 }
 
 
