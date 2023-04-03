@@ -1,10 +1,11 @@
 One Punch Man API
-![One Punch Man API](https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTsELxXWj1G2RJo8kTgc0Icu0lG6EpVc7QI7Q&usqp=CAU)
 
+![One Punch Man API](https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTsELxXWj1G2RJo8kTgc0Icu0lG6EpVc7QI7Q&usqp=CAU)
 
 Servidor DB - MySql
 
 ------ Configuração MySql -------
+
 1 - Executar o comando: create database onepunchman;
 
 2 - Executar os comandos do arquivo create-tables.sql
@@ -19,7 +20,9 @@ Servidor DB - MySql
 
 
 ------ Executando -------
+
 Endereço: localhost:8080/heroi/novo
+
 body json {
     “nome”: string
     “classe”: “A”|”B”|”C”|”S”
