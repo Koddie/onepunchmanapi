@@ -4,13 +4,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
-	"strings"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/gorilla/mux"
 )
 
 type Heroi struct {
@@ -40,7 +41,6 @@ func configDatabase() {
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	pingErr := db.Ping()
 	if pingErr != nil {
 		log.Fatal(pingErr)
@@ -49,65 +49,24 @@ func configDatabase() {
 }
 
 func configServer() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/heroi/novo", novoHeroi)
-	err := http.ListenAndServe(":8080", mux)
+	router := mux.NewRouter()
+	router.HandleFunc("/heroi/{id}", listaHeroi).Methods("GET")
+	router.HandleFunc("/heroi/{id}", excluiHeroi).Methods("DELETE")
+	router.HandleFunc("/heroi/novo", novoHeroi).Methods("POST")
+	err := http.ListenAndServe(":8080", router)
 	log.Fatal(err)
 }
 
-func novoHeroi(w http.ResponseWriter, r *http.Request) {
-	body, err := ioutil.ReadAll(r.Body)
+func processaBody(body io.ReadCloser) []byte {
+	b, err := ioutil.ReadAll(body)
 	if err != nil {
 		panic(err)
 	}
-	reader := strings.NewReader(string(body))
-	var h Heroi
-	json.Unmarshal(body, &h)
-	if err := json.NewDecoder(reader).Decode(&h); err != nil {
-		w.WriteHeader(500)
-		fmt.Fprintf(w, "Erro %s", err)
-		return
-	}
-	// Erro se tenta cadastrar em classe não existente
-	if h.Classe != "A" && h.Classe != "B" && h.Classe != "C" && h.Classe != "S" {
-		w.WriteHeader(500)
-		fmt.Fprintf(w, "A classe do herói deve ser A, B, C ou S!")
-		return
-	}
-	// Busca possiveis duplicacoes
-	hers, err := listaTodosHerois()
-	if err != nil {
-		w.WriteHeader(500)
-		fmt.Fprintf(w, "A busca por heróis já salvos falhou...")
-		return
-	}
-	for _, her := range hers {
-		if h.Nome == her.Nome {
-			w.WriteHeader(http.StatusConflict)
-			fmt.Fprintf(w, "Herói já cadastrado")
-			return
-		}
-	}
-	// Inserindo novo Herói
-	result, err := db.Exec("INSERT INTO heroi (nome, classe, ranking) VALUES (?, ?, ?)", h.Nome, h.Classe, h.Ranking)
-	if err != nil {
-		w.WriteHeader(500)
-		fmt.Fprintf(w, "Erro ao salvar o novo herói...")
-		return
-	}
-	id, err := result.LastInsertId()
-	if err != nil {
-		w.WriteHeader(500)
-		fmt.Fprintf(w, "Erro ao gerar o id do novo herói...")
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "{id: %d}", id)
+	return b
 }
 
 func listaTodosHerois() ([]Heroi, error) {
 	var herois []Heroi
-
 	rows, err := db.Query("SELECT * FROM heroi")
 	if err != nil {
 		return nil, fmt.Errorf("todosHerois %v", err)
@@ -124,4 +83,97 @@ func listaTodosHerois() ([]Heroi, error) {
 		return nil, fmt.Errorf("albumsByArtist %v", err)
 	}
 	return herois, nil
+}
+
+func listaHeroi(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id, ok := vars["id"]
+	if !ok {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "Indique o Id do Herói que deseja buscar!")
+		return
+	}
+	result := db.QueryRow("SELECT * from heroi WHERE id = ?", id)
+	var h Heroi
+	if err := result.Scan(&h.Id, &h.Nome, &h.Classe, &h.Ranking); err != nil {
+		if err == sql.ErrNoRows {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprintf(w, "{message: Herói não encontrado}")
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "Erro ao procurar o Herói!")
+		return
+	}
+	str, err := json.Marshal(h)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "Erro ao retornar o Herói!")
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, string(str))
+}
+
+func novoHeroi(w http.ResponseWriter, r *http.Request) {
+	data := processaBody(r.Body)
+	var h Heroi
+	json.Unmarshal(data, &h)
+	// ERRO - se tenta cadastrar em classe não existente
+	if h.Classe != "A" && h.Classe != "B" && h.Classe != "C" && h.Classe != "S" {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "A classe do herói deve ser A, B, C ou S!")
+		return
+	}
+	// ERRO - Se tenta salvar duplicado
+	hers, err := listaTodosHerois()
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "A busca por heróis já salvos falhou...")
+		return
+	}
+	for _, her := range hers {
+		if h.Nome == her.Nome {
+			w.WriteHeader(http.StatusConflict)
+			fmt.Fprintf(w, "Herói já cadastrado")
+			return
+		}
+	}
+	// Inserindo novo Herói
+	result, err := db.Exec("INSERT INTO heroi (nome, classe, ranking) VALUES (?, ?, ?)", h.Nome, h.Classe, h.Ranking)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "Erro ao salvar o novo herói...")
+		return
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "Erro ao gerar o id do novo herói...")
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "{id: %d}", id)
+}
+
+func excluiHeroi(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	id, ok := vars["id"]
+	if !ok {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "Indique o Id do Herói que deseja buscar!")
+		return
+	}
+	_, err := db.Exec("DELETE from heroi WHERE id = ?", id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprintf(w, "{message: Herói não encontrado}")
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "Erro ao excluir o Herói")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
