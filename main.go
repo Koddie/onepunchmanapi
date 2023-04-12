@@ -8,12 +8,16 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/gorilla/mux"
 )
 
+// region inicialização #############################
 type Heroi struct {
 	Id      int    `json:"id"`
 	Nome    string `json:"nome"`
@@ -48,15 +52,20 @@ func configDatabase() {
 	fmt.Println("Conectado ao Banco de Dados!")
 }
 
-func configServer() {
+func configServer() { // TODO - Bloquear acesso no endpoint por outros metodos
 	router := mux.NewRouter()
+	router.HandleFunc("/heroi", novoHeroi).Methods("PUT")
+	router.HandleFunc("/heroi", listaHerois).Methods("GET")
 	router.HandleFunc("/heroi/{id}", listaHeroi).Methods("GET")
 	router.HandleFunc("/heroi/{id}", excluiHeroi).Methods("DELETE")
-	router.HandleFunc("/heroi/novo", novoHeroi).Methods("POST")
+	router.HandleFunc("/heroi/{id}", mudaHeroi).Methods("POST")
 	err := http.ListenAndServe(":8080", router)
 	log.Fatal(err)
 }
 
+// endregion inicialização
+
+// region utilitários #############################
 func processaBody(body io.ReadCloser) []byte {
 	b, err := ioutil.ReadAll(body)
 	if err != nil {
@@ -65,7 +74,50 @@ func processaBody(body io.ReadCloser) []byte {
 	return b
 }
 
-func listaTodosHerois() ([]Heroi, error) {
+func checaPorId(w http.ResponseWriter, r *http.Request) string {
+	vars := mux.Vars(r)
+	id, ok := vars["id"]
+	if !ok {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprintf(w, "Indique o Id do Herói que deseja buscar!")
+		return ""
+	}
+	return id
+}
+
+// endregion utilitários
+
+// region CRUD Heroi #############################
+func listaHerois(w http.ResponseWriter, r *http.Request) { // FIX - Gambiarra
+	if len(r.URL.Query()) == 0 {
+		hers, _ := buscaTodosHerois()
+		js_hers, err := json.Marshal(hers)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintf(w, "Erro ao procurar Herois!")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, string(js_hers))
+	} else {
+		hers, err := buscaHerois(r.URL.Query())
+		if hers == nil || err != nil {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Println("Nenhum Herói encontrado!")
+			return
+		}
+		js_hers, err := json.Marshal(hers)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintf(w, "Erro ao procurar Herois!")
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, string(js_hers))
+	}
+}
+
+func buscaTodosHerois() ([]Heroi, error) {
 	var herois []Heroi
 	rows, err := db.Query("SELECT * FROM heroi")
 	if err != nil {
@@ -79,8 +131,79 @@ func listaTodosHerois() ([]Heroi, error) {
 		}
 		herois = append(herois, her)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("albumsByArtist %v", err)
+	return herois, nil
+}
+
+func buscaHerois(v url.Values) ([]Heroi, error) {
+	var herois []Heroi
+	var aux []Heroi
+	// Busca por nome
+	if v["nome"] != nil {
+		rows, err := db.Query("SELECT * FROM heroi WHERE nome LIKE ?", "%"+v["nome"][0]+"%")
+		if err != nil {
+			return nil, fmt.Errorf("buscaHerois %v", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var her Heroi
+			if err := rows.Scan(&her.Id, &her.Nome, &her.Classe, &her.Ranking); err != nil {
+				return nil, fmt.Errorf("todosHerois %v", err)
+			}
+			aux = append(aux, her)
+		}
+	}
+	// Busca por outros campos
+	keys := make([]string, len(v))
+	i := 0
+	for k := range v {
+		keys[i] = k
+		i++
+	}
+	for k := range keys {
+		if keys[k] != "nome" {
+			qy := fmt.Sprintf("SELECT * FROM heroi WHERE %s= ?", keys[k])
+			rows, err := db.Query(qy, v[keys[k]][0])
+			if err != nil {
+				return nil, fmt.Errorf("buscaHerois %v", err)
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var her Heroi
+				if err := rows.Scan(&her.Id, &her.Nome, &her.Classe, &her.Ranking); err != nil {
+					return nil, fmt.Errorf("todosHerois %v", err)
+				}
+				// adiciona heroi no array auxiliar sem duplicar
+				found := false
+				for _, h := range aux {
+					if h == her {
+						found = true
+					}
+				}
+				if found == false {
+					aux = append(aux, her)
+				}
+			}
+		}
+	}
+	// checa se da match em todos os parametros de busca e adiciona no array de retorno se sim
+	for _, h := range aux { // FIX - Gambiarra
+		if v["nome"] != nil {
+			if !strings.Contains(h.Nome, v["nome"][0]) {
+				continue
+			}
+		}
+		if v["classe"] != nil {
+			if v["classe"][0] != h.Classe {
+				continue
+			}
+		}
+		if v["ranking"] != nil {
+			r, _ := strconv.Atoi(v["ranking"][0])
+			if r != h.Ranking {
+				continue
+			}
+		}
+		herois = append(herois, h)
 	}
 	return herois, nil
 }
@@ -126,7 +249,7 @@ func novoHeroi(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// ERRO - Se tenta salvar duplicado
-	hers, err := listaTodosHerois()
+	hers, err := buscaTodosHerois()
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		fmt.Fprintf(w, "A busca por heróis já salvos falhou...")
@@ -156,12 +279,33 @@ func novoHeroi(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "{id: %d}", id)
 }
 
+func mudaHeroi(w http.ResponseWriter, r *http.Request) {
+	id := checaPorId(w, r)
+	if id == "-1" {
+		return
+	}
+	data := processaBody(r.Body)
+	var h Heroi
+	json.Unmarshal(data, &h)
+	_id, _ := strconv.Atoi(id)
+	if h.Classe != "" {
+		_, err := db.Exec("UPDATE heroi SET classe=? WHERE id=?", h.Classe, _id)
+		if err != nil {
+			panic(err.Error())
+		}
+	}
+	if h.Ranking != 0 {
+		_, err := db.Exec("UPDATE heroi SET ranking=? WHERE id=?", h.Ranking, _id)
+		if err != nil {
+			panic(err.Error())
+		}
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func excluiHeroi(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	id, ok := vars["id"]
-	if !ok {
-		w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintf(w, "Indique o Id do Herói que deseja buscar!")
+	id := checaPorId(w, r)
+	if id == "-1" {
 		return
 	}
 	_, err := db.Exec("DELETE from heroi WHERE id = ?", id)
@@ -177,3 +321,5 @@ func excluiHeroi(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// endregion CRUD Heroi
